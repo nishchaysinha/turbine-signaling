@@ -1,11 +1,11 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { URL } from 'node:url';
-import { getPairingSession, setPairingAnswer, addIceCandidate } from '../../lib/store.js';
+import { getPairingSession, setPairingAnswer, addIceCandidate, updateSessionOffer } from '../../lib/store.js';
 
 export default async function handler(req: IncomingMessage, res: ServerResponse) {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
   if (req.method === 'OPTIONS') {
     res.statusCode = 204;
@@ -32,13 +32,22 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     return;
   }
 
-  // GET: Retrieve offer or check answer
+  // GET: Retrieve offer or check answer (validates token if provided)
   if (req.method === 'GET') {
+    const token = reqUrl.searchParams.get('token');
+    if (token && token !== session.token) {
+      res.statusCode = 401;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ error: 'Invalid session token' }));
+      return;
+    }
+
     res.statusCode = 200;
     res.setHeader('Content-Type', 'application/json');
     res.end(
       JSON.stringify({
         code: session.code,
+        token: session.token,
         offer: session.offer,
         offerCandidates: session.offerCandidates,
         answer: session.answer,
@@ -46,6 +55,50 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
         expiresAt: session.expiresAt,
       })
     );
+    return;
+  }
+
+  // PUT: Refresh desktop offer for existing persistent session
+  if (req.method === 'PUT') {
+    let body = '';
+    req.on('data', (chunk) => {
+      body += chunk;
+    });
+
+    req.on('end', async () => {
+      try {
+        const data = JSON.parse(body || '{}');
+        if (!data.token || !data.offer) {
+          res.statusCode = 400;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ error: 'Token and WebRTC SDP offer are required' }));
+          return;
+        }
+
+        const updated = await updateSessionOffer(code, data.token, data.offer, data.candidates || []);
+        if (!updated) {
+          res.statusCode = 401;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ error: 'Invalid token or session expired' }));
+          return;
+        }
+
+        res.statusCode = 200;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(
+          JSON.stringify({
+            success: true,
+            code: updated.code,
+            token: updated.token,
+            expiresAt: updated.expiresAt,
+          })
+        );
+      } catch {
+        res.statusCode = 400;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ error: 'Invalid JSON payload' }));
+      }
+    });
     return;
   }
 

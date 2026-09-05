@@ -34,7 +34,12 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
         return;
       }
 
-      const session = await createPairingSession(data.offer, data.candidates || [], data.token);
+      const session = await createPairingSession(
+        data.offer,
+        data.candidates || [],
+        data.token,
+        data.code
+      );
 
       res.statusCode = 200;
       res.setHeader('Content-Type', 'application/json');

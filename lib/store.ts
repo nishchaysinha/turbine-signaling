@@ -29,12 +29,22 @@ export async function createPairingSession(
   offer: unknown,
   offerCandidates: unknown[] = [],
   token?: string,
-  ttlMs: number = 5 * 60 * 1000
+  customCode?: string,
+  ttlMs: number = 24 * 60 * 60 * 1000
 ): Promise<SignalingSession> {
-  const code = generatePairingCode();
+  const cleanCode = customCode ? customCode.toUpperCase().trim() : generatePairingCode();
+
+  if (customCode && token) {
+    const existing = await getPairingSession(cleanCode);
+    if (existing && existing.token === token) {
+      const updated = await updateSessionOffer(cleanCode, token, offer, offerCandidates, ttlMs);
+      if (updated) return updated;
+    }
+  }
+
   const now = Date.now();
   const session: SignalingSession = {
-    code,
+    code: cleanCode,
     token: token || Math.random().toString(36).substring(2, 15),
     offer,
     offerCandidates,
@@ -44,11 +54,11 @@ export async function createPairingSession(
     expiresAt: now + ttlMs,
   };
 
-  localSessions.set(code, session);
+  localSessions.set(cleanCode, session);
 
   // Publish session offer to global ephemeral relay
   try {
-    const topic = cleanTopic(code);
+    const topic = cleanTopic(cleanCode);
     await fetch(`https://ntfy.sh/${topic}-offer`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -56,6 +66,41 @@ export async function createPairingSession(
     });
   } catch (e) {
     console.error('[Signaling] Failed to publish offer to relay:', e);
+  }
+
+  return session;
+}
+
+export async function updateSessionOffer(
+  code: string,
+  token: string,
+  offer: unknown,
+  offerCandidates: unknown[] = [],
+  ttlMs: number = 24 * 60 * 60 * 1000
+): Promise<SignalingSession | null> {
+  const cleanCode = code.toUpperCase().trim();
+  const session = await getPairingSession(cleanCode);
+  if (!session) return null;
+  if (session.token !== token) return null; // Unauthorized
+
+  const now = Date.now();
+  session.offer = offer;
+  session.offerCandidates = offerCandidates;
+  session.answer = null;
+  session.answerCandidates = [];
+  session.expiresAt = now + ttlMs;
+
+  localSessions.set(cleanCode, session);
+
+  try {
+    const topic = cleanTopic(cleanCode);
+    await fetch(`https://ntfy.sh/${topic}-offer`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(session),
+    });
+  } catch (e) {
+    console.error('[Signaling] Failed to update offer in relay:', e);
   }
 
   return session;
